@@ -16,7 +16,7 @@ import Data.Tuple.Nested (type (/\), (/\))
 import Language.Jowo.AST (Expr(..), Monotype(..), Polytype(..), poly)
 
 
--- | A dictionary that maps **unknown types (TVar)** with their **monotypes** if any
+-- | A dictionary that maps **unknown types (TVar)** to their **monotypes** if any
 -- |
 -- | S = [a |-> Int, b |-> String, c |-> a];
 -- | S (Int) = Int;
@@ -45,7 +45,7 @@ composeSubstDict s2 s1 = HM.union (HM.mapMaybe (\mono -> Just (substituteMono mo
 
 -- | The function can only be applied to those monotypes containing type variables.
 -- | Literal types such as Boolean, Int, and String will not be affected cause they are
--- | concrete type already
+-- | concrete types already
 -- |
 -- | Applying a substitution means replacing all type variables with monotypes.
 -- | For instance `[a |-> Int](a -> a -> String)` should be `Int -> Int -> String`
@@ -66,18 +66,18 @@ substituteMono ty subsDict = case ty of
 -- |
 -- | Type variable `a` here is a free var (comes from somewhere outside its scope)
 -- | whereas type variable `b` **belongs to** the polytype thus should not be substituted.
--- | So the final result should be
+-- | The final result is going to be
 -- |
 -- | `∀ b. Int -> b -> String`
 substitutePoly :: Polytype -> SubstitutionDict -> Polytype
 substitutePoly (Polytype vars monoTy) subsDict =
   -- To get free vars only, we can "temporarily" delete all type variables in
   -- the substitution dict that happen to appear in the polytype quantifier
-  let dictWithOnlyFreeVars = foldr HM.delete subsDict vars in
+  let dictWithFreeVarsOnly = foldr HM.delete subsDict vars in
   -- Then use the free-vars-only dict to apply substitutions to the polytype
-  Polytype vars (substituteMono monoTy dictWithOnlyFreeVars)
+  Polytype vars (substituteMono monoTy dictWithFreeVarsOnly)
 
--- | This is a dictionary from **variable names** in scope with their **types**.
+-- | This is a dictionary that maps **variable names** in scope to their **types**.
 -- | Think of it as a variable scoping mechanism. When a variable is encountered,
 -- | we need to look up the variable name in the scope (a.k.a context)
 type Context = HM.HashMap String Polytype
@@ -101,8 +101,8 @@ instance showTypeError :: Show TypeError where
 
 type Unique = Int
 
--- | Our Infer monad. It allows us to throw `TypeError` while providing the ability
--- | to produce unique values (through `State Unique`) to unknown types
+-- | Our Infer monad. It allows us to throw `TypeError`s while providing the ability
+-- | to produce unique values (through `State Unique`) for unknown types
 type Infer a = ExceptT TypeError (State Unique) a
 
 -- | Generates an auto-increment Int to make a unique `TVar`
@@ -136,17 +136,18 @@ instantiate (Polytype vars mono) = do
   -- This way we can safely apply substitutions to its underlying monotype!
   pure $ substituteMono mono subsDict
 
--- | Basically it gathers all `TVar`s within an expression
+-- | Basically gathers all `TVar`s within an expression
 freeTypeVars :: Monotype -> Set.Set String
 freeTypeVars (TVar var) = Set.singleton var
 freeTypeVars (TFunction arg ret) = Set.union (freeTypeVars arg) (freeTypeVars ret)
 freeTypeVars _ = Set.empty
 
--- | Bind a type variable to a monotype
+-- | Bind a type variable to a monotype. See `unify` to know where it's being used
 varBind :: String -> Monotype -> Infer SubstitutionDict
 varBind var ty
-  | ty == TVar var = pure emptySubstDict -- we don't learn anything, return empty dict
-  -- `unify x (x -> x)` must throw an error, cause it's a recursive definition of "x"
+  -- We don't learn anything, return empty dict
+  | ty == TVar var = pure emptySubstDict
+  -- `unify x (x -> x)` must throw an error, due to the recursive definition of "x"
   | Set.member var (freeTypeVars ty) = throwError OccursCheck
   -- `unify x y = [x |-> y]`
   | otherwise = pure $ HM.singleton var ty
@@ -198,8 +199,9 @@ infer (EIf pred thenE elseE) ctx = do
   let s7 = s6 `composeSubstDict` s5
   pure $ tyThen /\ s7
 
--- | Unification is like an assertion. It's like you say "please assert that these two monotypes
--- | are identical". It may learn something along the way, hence `SubstitutionDict` being the return type
+-- | Unification is pretty much like an assertion, "please assert that
+-- | these two monotypes are identical". It may learn something along the way,
+-- | hence `SubstitutionDict` being the return type
 -- |
 -- | Unification should be commutative, means `unify x y == unify y x`
 -- |
@@ -208,9 +210,9 @@ infer (EIf pred thenE elseE) ctx = do
 -- | (a -> Bool) `unify` (Int -> Bool) = [a |-> Int]
 -- | ```
 unify :: Monotype -> Monotype -> Infer SubstitutionDict
-unify TInt TInt = pure emptySubstDict -- we learn nothing, so return an empty subs dict
-unify TBoolean TBoolean = pure emptySubstDict -- we learn nothing, so return an empty subs dict
-unify TString TString = pure emptySubstDict -- we learn nothing, so return an empty subs dict
+unify TInt TInt = pure emptySubstDict  -- we don't learn anything, return empty dict
+unify TBoolean TBoolean = pure emptySubstDict
+unify TString TString = pure emptySubstDict
 unify (TFunction arg1 ret1) (TFunction arg2 ret2) = do
   s1 <- unify arg1 arg2
   s2 <- unify (substituteMono ret1 s1) (substituteMono ret2 s1)
